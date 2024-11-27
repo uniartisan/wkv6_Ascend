@@ -1,0 +1,12 @@
+cpu/build/*
+cpu/input/*
+npu/build/*
+npu/prof/*
+*.log
+*.bin
+*.npy
+*.dump
+*.cce
+
+
+.vscode/*
