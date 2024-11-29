@@ -100,9 +100,9 @@ msprof op --output="./prof/" --application=./build/rwkv6_vector_kernel_op
 
 ## 修改Tiling
 在main_npu.cpp中修改 tileLength 参数，算子对T维度进行Tiling切分，当前代码实现需要保证tileLength修改为 T 的因数。
-Vector算子内存计算在UB (unified buffer)中进行，UB内存大小为192KB，因此tileLength受UB内存大小约束。
+Vector算子内存计算在UB (unified buffer) 中进行，UB内存大小为192KB，因此 tileLength 受UB内存大小约束。
 具体UB内存排布见算子设计文档及代码。
 
 ## 修改核数
-在main_npu.cpp中修改 CORE_NUM 参数，当前代码实现需要保证 CORE_NUM 为 B * H的因数。
+在main_npu.cpp中修改 CORE_NUM 参数，当前代码实现无需保证 CORE_NUM 为 B * H 的因数。
 CORE_NUM最大值参见当前NPU处理器型号参数。

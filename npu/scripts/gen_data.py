@@ -52,7 +52,7 @@ if __name__=="__main__":
     T = 256
     C = 4096
     H = 64
-    cur_dir = os.getcwd()
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
     os.system("rm -rf ../input_npu")
     os.system("rm -rf ../output_npu")
     os.system("mkdir ../input_npu")

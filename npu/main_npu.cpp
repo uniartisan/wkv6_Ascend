@@ -8,7 +8,7 @@ constexpr uint32_t T = 256;
 constexpr uint32_t C = 4096;
 constexpr uint32_t H = 64;
 constexpr uint32_t tileLength = 64;
-constexpr uint32_t CORE_NUM = 32;
+constexpr uint32_t CORE_NUM = 40;
 
 
 int64_t CompareResult(void* outputData, int64_t outSize)
@@ -25,6 +25,7 @@ int64_t CompareResult(void* outputData, int64_t outSize)
 
     constexpr float EPS = 1e-3;
     int64_t wrongNum = 0;
+    float maxError = 0;
     for (int i = 0;i< outSize / (sizeof(float)/2);i++) {
         float real = static_cast<float>(((__fp16*)outputData)[i]);
         float golden = static_cast<float>(((__fp16*)goldenData)[i]);
@@ -35,10 +36,12 @@ int64_t CompareResult(void* outputData, int64_t outSize)
             wrongNum++;
         }
         else {
+            maxError = std::max(maxError, static_cast<float>(std::abs(real - golden)));
             std::cout << "i=" << i << " test passed: output real o: " << real << ", output golden o: " << golden << std::endl;
         }
     }
     CHECK_ACL(aclrtFreeHost(goldenData));
+    std::cout << "maxError: " << maxError << std::endl;
     return wrongNum;
 }
 

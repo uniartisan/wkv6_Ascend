@@ -51,7 +51,7 @@ if __name__=="__main__":
     T = 32
     C = 256
     H = 8
-    cur_dir = os.getcwd()
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
     os.system("rm -rf ../input")
     os.system("rm -rf ../output")
     os.system("mkdir ../input")
