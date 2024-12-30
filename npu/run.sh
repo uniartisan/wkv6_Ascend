@@ -63,4 +63,5 @@ cmake --build build -j
 (
     cd build
     python3 ../torch_test.py
+    python3 ../torch_benchmark.py
 )
