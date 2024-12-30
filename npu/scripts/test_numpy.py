@@ -169,5 +169,5 @@ def compare_outputs(B, T, C, H, data_type=torch.float32):
 
 # Example usage
 if __name__ == "__main__":
-    B, T, C, H = 1, 16, 16, 4
+    B, T, C, H = 1, 16, 1024, 32
     compare_outputs(B, T, C, H)

@@ -8,12 +8,12 @@
 namespace my_wkv {
 at::Tensor run_wkv6(uint32_t B, uint32_t T, uint32_t C, uint32_t H,
                         const at::Tensor &k, const at::Tensor &v, const at::Tensor &w,
-                        const at::Tensor &r, const at::Tensor &u)
+                        const at::Tensor &r, const at::Tensor &u, const at::Tensor &output)
 {
     // const at::Tensor &o, uint32_t tileLength
     auto acl_stream = c10_npu::getCurrentNPUStream().stream(false);
-    at::Tensor output = at::empty_like(r); // output tensor has the same shape as r(querry tensor)
-    uint32_t tileLength = 64;
+    // at::Tensor output = at::empty_like(r); // output tensor has the same shape as r(querry tensor)
+    uint32_t tileLength = 32;
     uint32_t blockDim = 8;
 
     ACLRT_LAUNCH_KERNEL(rwkv6_vector)
