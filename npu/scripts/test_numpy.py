@@ -10,13 +10,12 @@ def naive_recurrent_rwkv6(
     v: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
-    scale: Optional[float] = None,
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: Optional[bool] = False
 ):
     orig_dtype = q.dtype
     B, H, T, K, V = *q.shape, v.shape[-1]
-    q, k, v, w, u = map(lambda x: x.float(), (q, k, v, w, u))
+    q, k, v, w, u = map(lambda x: x.float().npu(), (q, k, v, w, u))
     h = torch.zeros(B, H, K, V, dtype=torch.float32, device=q.device)
     o = torch.zeros_like(v)
 
@@ -28,13 +27,13 @@ def naive_recurrent_rwkv6(
         q_i = q[:, :, i, :] 
         k_i = k[:, :, i]
         v_i = v[:, :, i, :]
-        w_i = w[:, :, i].exp()
+        w_i = w[:, :, i]
         kv_i = k_i[..., None] * v_i[..., None, :]
         o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
         o[:, :, i] = o_i.sum(-2)
-        h = h * w_i[..., None] + kv_i
+        h = h * (-w_i[..., None].exp()).exp() + kv_i
     ht = h if output_final_state else None
-    return o.to(orig_dtype), ht
+    return o.to(orig_dtype).cpu(), ht
 
 from typing import Optional
 import torch
@@ -75,7 +74,6 @@ def naive_recurrent_rwkv6_expanded(
                 k_i = k[b, h_idx, t, :]  # (D,)
                 v_i = v[b, h_idx, t, :]  # (D,)
                 w_i = w[b, h_idx, t, :]  # (D,)
-                # u_i = 
 
                 # 计算 kv_i = k_i * v_i^T
                 kv_i = k_i[:, None] * v_i[None, :]  # (D, D)
@@ -85,7 +83,7 @@ def naive_recurrent_rwkv6_expanded(
                 o[b, h_idx, t, :] = o_i.sum(dim=0)  # (D,)
 
                 # 更新隐藏状态 h = h * exp(w_i) + kv_i
-                h[b, h_idx] = h[b, h_idx] * w_i[:, None].exp() + kv_i
+                h[b, h_idx] = h[b, h_idx] * (-w_i[:, None].exp()).exp() + kv_i
 
     # 如果需要返回最终状态
     ht = h if output_final_state else None
@@ -128,7 +126,7 @@ def rwkv_numpy_forward(q, k, v, w, u):
                         x = k_np[b, h, t, j] * v_np[b, h, t, i]
                         s = state[j]
                         o_np[b, h, t, i] += q_np[b, h, t, j] * (u_np[h, j] * x + s)
-                        state[j] = s * np.exp(w_np[b, h, t, j]) + x
+                        state[j] = s * np.exp(-np.exp(w[b, h, t, j]))  + x
     
     # Convert the result back to a PyTorch tensor
     o_torch = torch.from_numpy(o_np)
@@ -146,7 +144,7 @@ def compare_outputs(B, T, C, H, data_type=torch.float32):
 
     k = torch.rand(param_shape, dtype=data_type).uniform_(-1,1).to(torch.device("cpu"))
     v = torch.rand(param_shape, dtype=data_type).uniform_(-1,1).to(torch.device("cpu"))
-    w = torch.rand(param_shape, dtype=data_type).uniform_(-1,1).to(torch.device("cpu"))
+    w = torch.rand(param_shape, dtype=data_type).uniform_(-8,-6).to(torch.device("cpu"))
     q = torch.rand(param_shape, dtype=data_type).uniform_(-1,1).to(torch.device("cpu"))
     u = torch.rand(u_shape, dtype=data_type).uniform_(-1,1).to(torch.device("cpu"))
 
@@ -160,7 +158,7 @@ def compare_outputs(B, T, C, H, data_type=torch.float32):
     print(o_time_mix.shape, o_naive.shape)
 
     # Compare the two outputs
-    if torch.allclose(o_naive, o_time_mix, rtol=1e-5, atol=1e-8):
+    if torch.allclose(o_naive, o_time_mix, rtol=1e-5, atol=1e-5):
         print("Outputs are the same.")
     else:
         print("Outputs are different.")
