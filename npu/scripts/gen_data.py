@@ -88,19 +88,22 @@ def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
     w = torch.rand(param_shape, dtype=data_type).uniform_(-8, -6)
     q = torch.rand(param_shape, dtype=data_type).uniform_(-1, 1)
     u = torch.rand(u_shape, dtype=data_type).uniform_(-1, 1)
+    o = torch.zeros(param_shape, dtype=data_type)
 
     # 保存输入数据
-    k.numpy().tofile(os.path.join(input_dir, "input_k.bin"))
-    v.numpy().tofile(os.path.join(input_dir, "input_v.bin"))
-    w.numpy().tofile(os.path.join(input_dir, "input_w.bin"))
-    q.numpy().tofile(os.path.join(input_dir, "input_r.bin"))
-    u.numpy().tofile(os.path.join(input_dir, "input_u.bin"))
+    k.cpu().numpy().tofile(os.path.join(input_dir, "input_k.bin"))
+    v.cpu().numpy().tofile(os.path.join(input_dir, "input_v.bin"))
+    w.cpu().numpy().tofile(os.path.join(input_dir, "input_w.bin"))
+    q.cpu().numpy().tofile(os.path.join(input_dir, "input_r.bin"))
+    u.cpu().numpy().tofile(os.path.join(input_dir, "input_u.bin"))
+    o.cpu().numpy().tofile(os.path.join(input_dir, "input_o.bin"))
 
-    np.save(os.path.join(input_dir, "input_k.bin.npy"), k.numpy())
-    np.save(os.path.join(input_dir, "input_v.bin.npy"), v.numpy())
-    np.save(os.path.join(input_dir, "input_w.bin.npy"), w.numpy())
-    np.save(os.path.join(input_dir, "input_r.bin.npy"), q.numpy())
-    np.save(os.path.join(input_dir, "input_u.bin.npy"), u.numpy())
+    np.save(os.path.join(input_dir, "input_k.bin.npy"), k.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_v.bin.npy"), v.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_w.bin.npy"), w.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_r.bin.npy"), q.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_u.bin.npy"), u.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_o.bin.npy"), o.cpu().numpy())
 
     # 使用 PyTorch 计算输出
     with torch.no_grad():
@@ -114,11 +117,15 @@ def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
 if __name__ == "__main__":
     B, T, C, H = 1, 64, 4096, 64
     cur_dir = os.path.dirname(os.path.abspath(__file__))
-    os.system("rm -rf ../input_npu")
-    os.system("rm -rf ../output_npu")
-    os.system("mkdir ../input_npu")
-    os.system("mkdir ../output_npu")
-    input_dir = "../input_npu"
-    output_dir = "../output_npu"
+    father_dir = os.path.dirname(cur_dir)
+    # 定义输入和输出目录
+    input_dir = os.path.join(father_dir, "input_npu")
+    output_dir = os.path.join(father_dir, "output_npu")
+
+    # 删除并重新创建输入和输出目录
+    os.system(f"rm -rf {input_dir}")
+    os.system(f"rm -rf {output_dir}")
+    os.system(f"mkdir {input_dir}")
+    os.system(f"mkdir {output_dir}")
     data_type = torch.float32
     rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir)
