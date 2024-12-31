@@ -1,5 +1,8 @@
 import numpy as np
 import os
+import torch
+import torch_npu
+from typing import Optional, Tuple
 
 
 def rwkv_time_mix(B, T, C, H, data_type, input_dir, output_dir):
@@ -46,18 +49,83 @@ def rwkv_time_mix(B, T, C, H, data_type, input_dir, output_dir):
     np.save(os.path.join(output_dir, "output_o_golden.bin.npy"), o)
     return
 
+def naive_recurrent_rwkv6(
+    B, T, C, H,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+):
+    orig_dtype = q.dtype
+    B, H, T, K, V = *q.shape, v.shape[-1]
+    q, k, v, w, u = map(lambda x: x.float(), (q, k, v, w, u))
+    h = torch.zeros(B, H, K, V, dtype=torch.float32, device=q.device)
+    o = torch.zeros_like(v)
+
+
+
+    for i in range(T):
+        q_i = q[:, :, i, :] 
+        k_i = k[:, :, i]
+        v_i = v[:, :, i, :]
+        w_i = w[:, :, i]
+        kv_i = k_i[..., None] * v_i[..., None, :]
+        o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
+        o[:, :, i] = o_i.sum(-2)
+        h = h * (-w_i[..., None].exp()).exp() + kv_i
+   
+    return o.to(orig_dtype)
+
+def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
+    N = C // H  # 头的维度
+    param_shape = (B, H, T, N)
+    u_shape = (H, N)
+
+    # 生成随机数据
+    k = torch.rand(param_shape, dtype=data_type).uniform_(-1, 1)
+    v = torch.rand(param_shape, dtype=data_type).uniform_(-1, 1)
+    w = torch.rand(param_shape, dtype=data_type).uniform_(-8, -6)
+    q = torch.rand(param_shape, dtype=data_type).uniform_(-1, 1)
+    u = torch.rand(u_shape, dtype=data_type).uniform_(-1, 1)
+    o = torch.zeros(param_shape, dtype=data_type)
+
+    # 保存输入数据
+    k.cpu().numpy().tofile(os.path.join(input_dir, "input_k.bin"))
+    v.cpu().numpy().tofile(os.path.join(input_dir, "input_v.bin"))
+    w.cpu().numpy().tofile(os.path.join(input_dir, "input_w.bin"))
+    q.cpu().numpy().tofile(os.path.join(input_dir, "input_r.bin"))
+    u.cpu().numpy().tofile(os.path.join(input_dir, "input_u.bin"))
+    o.cpu().numpy().tofile(os.path.join(input_dir, "input_o.bin"))
+
+    np.save(os.path.join(input_dir, "input_k.bin.npy"), k.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_v.bin.npy"), v.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_w.bin.npy"), w.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_r.bin.npy"), q.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_u.bin.npy"), u.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_o.bin.npy"), o.cpu().numpy())
+
+    # 使用 PyTorch 计算输出
+    with torch.no_grad():
+        o = naive_recurrent_rwkv6(B, T, C, H, q.npu(), k.npu(), v.npu(), w.npu(), u.npu())
+        o = o.cpu()
+
+    # 保存输出数据
+    o.numpy().tofile(os.path.join(output_dir, "output_o_golden.bin"))
+    np.save(os.path.join(output_dir, "output_o_golden.bin.npy"), o.numpy())
 
 if __name__ == "__main__":
-    B = 1
-    T = 64
-    C = 1024
-    H = 32
+    B, T, C, H = 1, 128+8, 4096, 64
     cur_dir = os.path.dirname(os.path.abspath(__file__))
-    os.system("rm -rf ../input_npu")
-    os.system("rm -rf ../output_npu")
-    os.system("mkdir ../input_npu")
-    os.system("mkdir ../output_npu")
-    input_dir = "../input_npu"
-    output_dir = "../output_npu"
-    data_type = np.float32
-    rwkv_time_mix(B, T, C, H, data_type, input_dir, output_dir)
+    father_dir = os.path.dirname(cur_dir)
+    # 定义输入和输出目录
+    input_dir = os.path.join(father_dir, "input_npu")
+    output_dir = os.path.join(father_dir, "output_npu")
+
+    # 删除并重新创建输入和输出目录
+    os.system(f"rm -rf {input_dir}")
+    os.system(f"rm -rf {output_dir}")
+    os.system(f"mkdir {input_dir}")
+    os.system(f"mkdir {output_dir}")
+    data_type = torch.float32
+    rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir)

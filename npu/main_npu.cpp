@@ -4,11 +4,11 @@
 #include "aclrtlaunch_rwkv6_vector.h"
 
 constexpr uint32_t B = 1;
-constexpr uint32_t T = 64;
-constexpr uint32_t C = 1024;
-constexpr uint32_t H = 32;
+constexpr uint32_t T = 128+8;
+constexpr uint32_t C = 4096;
+constexpr uint32_t H = 64;
 constexpr uint32_t tileLength = 32;
-constexpr uint32_t CORE_NUM = 40;
+constexpr uint32_t CORE_NUM = 48;
 
 int64_t CompareResult(void *outputData, int64_t outSize)
 {
@@ -34,6 +34,7 @@ int64_t CompareResult(void *outputData, int64_t outSize)
         float golden = static_cast<float>(((float *)goldenData)[i]);
         float ae = std::abs(real - golden);
         float re = ae / abs(golden);
+        maxError = std::max(maxError, static_cast<float>(std::abs(real - golden)));
         if (ae > EPS && re > EPS)
         {
             std::cout << "i=" << i << " test failed: output real o: " << real << ", output golden o: " << golden << std::endl;
@@ -41,7 +42,6 @@ int64_t CompareResult(void *outputData, int64_t outSize)
         }
         // else
         // {
-        //     maxError = std::max(maxError, static_cast<float>(std::abs(real - golden)));
         //     std::cout << "i=" << i << " test passed: output real o: " << real << ", output golden o: " << golden << std::endl;
         // }
     }
@@ -84,12 +84,37 @@ int32_t main(int32_t argc, char *argv[])
     CHECK_ACL(aclrtMalloc((void **)&uDevice, uSize, ACL_MEM_MALLOC_HUGE_FIRST));
     CHECK_ACL(aclrtMalloc((void **)&oDevice, paramSize, ACL_MEM_MALLOC_HUGE_FIRST));
 
-    ReadFile("./input_npu/input_k.bin", paramSize, kHost, paramSize);
-    ReadFile("./input_npu/input_v.bin", paramSize, vHost, paramSize);
-    ReadFile("./input_npu/input_w.bin", paramSize, wHost, paramSize);
-    ReadFile("./input_npu/input_r.bin", paramSize, rHost, paramSize);
-    ReadFile("./input_npu/input_o.bin", paramSize, oHost, paramSize);
-    ReadFile("./input_npu/input_u.bin", uSize, uHost, uSize);
+    bool ret = false;
+    ret = ReadFile("./input_npu/input_k.bin", paramSize, kHost, paramSize);
+    if (ret)
+    {
+        printf("ReadFile k sucess!\n");
+    }
+    ret = ReadFile("./input_npu/input_v.bin", paramSize, vHost, paramSize);
+    if (ret)
+    {
+        printf("ReadFile v sucess!\n");
+    }
+    ret = ReadFile("./input_npu/input_w.bin", paramSize, wHost, paramSize);
+    if (ret)
+    {
+        printf("ReadFile w sucess!\n");
+    }
+    ret = ReadFile("./input_npu/input_r.bin", paramSize, rHost, paramSize);
+    if (ret)
+    {
+        printf("ReadFile r sucess!\n");
+    }
+    ret = ReadFile("./input_npu/input_o.bin", paramSize, oHost, paramSize);
+    if (ret)
+    {
+        printf("ReadFile o sucess!\n");
+    }
+    ret = ReadFile("./input_npu/input_u.bin", uSize, uHost, uSize);
+    if (ret)
+    {
+        printf("ReadFile u sucess!\n");
+    }
 
     CHECK_ACL(aclrtMemcpy(kDevice, paramSize, kHost, paramSize, ACL_MEMCPY_HOST_TO_DEVICE));
     CHECK_ACL(aclrtMemcpy(vDevice, paramSize, vHost, paramSize, ACL_MEMCPY_HOST_TO_DEVICE));
@@ -108,6 +133,7 @@ int32_t main(int32_t argc, char *argv[])
     {
         printf("test failed\n");
         printf("wrongNum = %d \n", wrongNum);
+        printf("totalNum = %d \n", paramSize / (sizeof(float)));
     }
     else
     {
