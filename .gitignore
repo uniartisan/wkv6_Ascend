@@ -10,3 +10,4 @@ npu/prof/*
 
 
 .vscode/*
+npu/result/*
