@@ -38,7 +38,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
     for _ in range(3):
         with torch.no_grad():
             _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
-        torch.npu.synchronize() 
+        torch.npu.synchronize()
 
     # 记录运行时间
     total_time = 0.0
@@ -46,7 +46,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
         for _ in range(num_runs):
             start_time = time.time()  # 记录开始时间
             _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
-            torch.npu.synchronize() 
+            torch.npu.synchronize()
             end_time = time.time()  # 记录结束时间
             total_time += (end_time - start_time)  # 累加运行时间
 
@@ -67,26 +67,31 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
     #     with_modules=False,
     #     with_flops=True,  # 开启 FLOPs 采集
     #     experimental_config=experimental_config) as prof:
-        
+
     #     for step in range(num_runs):
     #         _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
     #         prof.step()
-    print(f"WKV6 Vector Kernel Average running time over {num_runs} runs: {avg_time:.6f} seconds, token length: {T}")
+    print(
+        f"WKV6 Vector Kernel Average running time over {num_runs} runs: {avg_time:.6f} seconds, token length: {T}")
 
 
-def benchmark_flash_attention(B, T, C, H, q, k, v, attn_mask=None, num_runs=10):
+def benchmark_flash_attention(B, T, C, H, q, k, v, num_runs=10):
     """
     多次运行 FlashAttentionScore 并计算平均运行时间。
     """
     # 预热
+    # 生成下三角掩码
+    attn_mask = torch.triu(torch.ones(
+        (B, 1, T, T), dtype=torch.bool), diagonal=1).to(q.device)
+    attn_mask = torch.logical_not(attn_mask)  # 取反，True 表示保留，False 表示遮蔽
+
+    # 预热
     with torch.no_grad():
         for _ in range(3):
             _ = torch_npu.npu_fusion_attention(
-                q, k, v, H, "BNSD", 
-                atten_mask=attn_mask,
-                scale=1.0 / math.sqrt(C // H),  # 缩放系数
+                q, k, v, H, "BNSD",
+                scale=1.0 / math.sqrt(D),  # 缩放系数
                 keep_prob=1.0,  # 无 dropout
-                sparse_mode=0  # 默认模式
             )
             torch.npu.synchronize()
 
@@ -96,11 +101,9 @@ def benchmark_flash_attention(B, T, C, H, q, k, v, attn_mask=None, num_runs=10):
         for _ in range(num_runs):
             start_time = time.time()
             _ = torch_npu.npu_fusion_attention(
-                q, k, v, H, "BNSD", 
-                atten_mask=attn_mask,
-                scale=1.0 / math.sqrt(C // H),  # 缩放系数
+                q, k, v, H, "BNSD",
+                scale=1.0 / math.sqrt(D),  # 缩放系数
                 keep_prob=1.0,  # 无 dropout
-                sparse_mode=0  # 默认模式
             )
             torch.npu.synchronize()
             end_time = time.time()
@@ -109,38 +112,40 @@ def benchmark_flash_attention(B, T, C, H, q, k, v, attn_mask=None, num_runs=10):
     # 计算平均运行时间
     avg_time = total_time / num_runs
 
-    
-    print(f"FlashAttentionScore Average running time over {num_runs} runs: {avg_time:.6f} seconds, token length: {T}")
+    print(
+        f"FlashAttentionScore Average running time over {num_runs} runs: {avg_time:.6f} seconds, token length: {T}")
+
 
 # 示例用法
 if __name__ == "__main__":
-    B, T, C, H = 8, 4096*4, 4096, 64  # Batch size, Sequence length, Embedding dimension, Head number
-    L = T
-    device = torch.device("npu:0")
-    dtype = torch.bfloat16  # FlashAttentionScore 支持 float16 和 bfloat16
+    test_list = [(8, 4096, 64, 64), (8, 4096*2, 64, 64), (8, 4096*3, 64, 64),
+                 (8, 4096*4, 64, 64), (8, 4096, 128, 64), (8, 4096, 32, 64), (8, 4096, 8, 64), ]
+    for B, L, H, D in test_list:
+        C = H * D
+        print(
+            f"Running benchmark with B={B}, T={L}, H={H}, D={D}... BF16 vs FP32")
+        device = torch.device("npu:0")
+        dtype = torch.bfloat16  # FlashAttentionScore 支持 float16 和 bfloat16
 
-    # 生成随机输入张量
-    q = torch.randn(B, H, L, C // H).to(device).to(dtype)  # [B, H, L, C//H]
-    k = torch.randn(B, H, L, C // H).to(device).to(dtype)  # [B, H, L, C//H]
-    v = torch.randn(B, H, L, C // H).to(device).to(dtype)  # [B, H, L, C//H]
+        # 生成随机输入张量
+        q = torch.randn(B, H, L, D).to(device).to(dtype)  # [B, H, L, C//H]
+        k = torch.randn(B, H, L, D).to(device).to(dtype)  # [B, H, L, C//H]
+        v = torch.randn(B, H, L, D).to(device).to(dtype)  # [B, H, L, C//H]
 
-    # 生成注意力掩码（可选）
-    attn_mask = torch.randint(0, 2, (B, 1, L, L), dtype=torch.bool).to(device)  # [B, 1, L, L]
+        # 运行 benchmark
+        benchmark_flash_attention(B, L, C, H, q, k, v, num_runs=10)
+        del q, k, v
 
-    # 运行 benchmark
-    benchmark_flash_attention(B, T, C, H, q, k, v, attn_mask=attn_mask, num_runs=10)
-    del q, k ,v, attn_mask
+        device = torch.device("npu:0")
+        dtype = torch.float32
 
-    device = torch.device("npu:0")
-    dtype = torch.float32
-    D = C // H
+        # 生成随机输入张量
+        q = torch.randn(B, H, L, D).to(device).to(dtype)
+        k = torch.randn(B, H, L, D).to(device).to(dtype)
+        v = torch.randn(B, H, L, D).to(device).to(dtype)
+        w = torch.randn(B, H, L, D).uniform_(-8, -6).to(device).to(dtype)
+        u = torch.randn(H, D).to(device).to(dtype)
 
-    # 生成随机输入张量
-    q = torch.randn(B, H, L, D).to(device).to(dtype)
-    k = torch.randn(B, H, L, D).to(device).to(dtype)
-    v = torch.randn(B, H, L, D).to(device).to(dtype)
-    w = torch.randn(B, H, L, D).uniform_(-8, -6).to(device).to(dtype)
-    u = torch.randn(H, D).to(device).to(dtype)
-
-    # 运行 benchmark
-    benchmark(B, T, C, H, q, k, v, w, u, num_runs=10)  # 默认运行 10 次
+        # 运行 benchmark
+        benchmark(B, L, C, H, q, k, v, w, u, num_runs=10)  # 默认运行 10 次
+        del q, k, v, w, u

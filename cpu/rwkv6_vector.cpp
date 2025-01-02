@@ -31,7 +31,7 @@ public:
         this->T = T;
         this->C = C;
         this->H = H;
-        this->N = C / H;
+        this->N = C / H; // 头的维度
         // 在T维度上切tiling
         this->tileLength = tileLength;
         this->tileNum = this->T / tileLength; // 余数还需要考虑。
