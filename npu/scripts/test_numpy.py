@@ -25,8 +25,8 @@ def naive_recurrent_rwkv6(
 
     for i in range(T):
         q_i = q[:, :, i, :] 
-        k_i = k[:, :, i]
-        v_i = v[:, :, i, :]
+        k_i = k[:, :, i] * (K ** -0.5)
+        v_i = v[:, :, i, :] * (V ** -0.5)
         w_i = w[:, :, i]
         kv_i = k_i[..., None] * v_i[..., None, :]
         o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
@@ -54,7 +54,7 @@ def naive_recurrent_rwkv6_expanded(
     h = torch.zeros(B, H, D, D, dtype=torch.float32, device=q.device)
     h = torch.zeros(B, H, D, D, dtype=orig_dtype, device=q.device)  # 隐藏状态
     o = torch.zeros_like(v)
-
+    B, H, T, K, V = *q.shape, v.shape[-1]
     # 如果有初始状态，加到隐藏状态中
     if initial_state is not None:
         h += initial_state.to(dtype=orig_dtype)
@@ -71,8 +71,8 @@ def naive_recurrent_rwkv6_expanded(
             
                 # 获取当前时间步的 q, k, v, w
                 q_i = q[b, h_idx, t, :]  # (D,)
-                k_i = k[b, h_idx, t, :]  # (D,)
-                v_i = v[b, h_idx, t, :]  # (D,)
+                k_i = k[b, h_idx, t, :] * (K ** -0.5) # (D,)
+                v_i = v[b, h_idx, t, :] * (V ** -0.5) # (D,)
                 w_i = w[b, h_idx, t, :]  # (D,)
 
                 # 计算 kv_i = k_i * v_i^T
@@ -123,7 +123,7 @@ def rwkv_numpy_forward(q, k, v, w, u):
                 state = np.zeros((N), dtype=q_np.dtype)
                 for t in range(T):
                     for j in range(N):
-                        x = k_np[b, h, t, j] * v_np[b, h, t, i]
+                        x = k_np[b, h, t, j] * (N ** -0.5) * v_np[b, h, t, i] * (N ** -0.5)
                         s = state[j]
                         o_np[b, h, t, i] += q_np[b, h, t, j] * (u_np[h, j] * x + s)
                         state[j] = s * np.exp(-np.exp(w[b, h, t, j]))  + x

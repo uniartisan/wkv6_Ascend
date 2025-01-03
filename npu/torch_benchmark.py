@@ -35,6 +35,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
         num_runs: 运行次数，默认为 10 次。
     """
     # 预热（避免第一次运行时间不准确）
+    scale = 1.0 / math.sqrt(C // H)
     for _ in range(3):
         with torch.no_grad():
             _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
@@ -42,16 +43,21 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
 
     # 记录运行时间
     total_time = 0.0
+    total_peak_memory = 0.0
     with torch.no_grad():
         for _ in range(num_runs):
+            torch.npu.reset_peak_memory_stats()  # 重置峰值显存统计
             start_time = time.time()  # 记录开始时间
             _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
             torch.npu.synchronize()
             end_time = time.time()  # 记录结束时间
+            peak_memory = torch.npu.max_memory_allocated()  # 记录峰值显存
             total_time += (end_time - start_time)  # 累加运行时间
+            total_peak_memory += peak_memory  # 累加峰值显存
 
     # 计算平均运行时间
     avg_time = total_time / num_runs
+    avg_peak_memory = total_peak_memory / num_runs
 
     # 启动性能数据采集
     # with torch_npu.profiler.profile(
@@ -72,7 +78,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
     #         _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
     #         prof.step()
     print(
-        f"WKV6 Vector Kernel Average running time over {num_runs} runs: {avg_time:.6f} seconds, token length: {T}")
+        f"WKV6 Vector Kernel Average running time over {num_runs} runs: {avg_time:.6f} seconds, {avg_peak_memory / 1024 ** 2:.2f} MB")
 
 
 def benchmark_flash_attention(B, T, C, H, q, k, v, num_runs=10):
@@ -97,8 +103,10 @@ def benchmark_flash_attention(B, T, C, H, q, k, v, num_runs=10):
 
     # 记录运行时间
     total_time = 0.0
+    total_peak_memory = 0.0
     with torch.no_grad():
         for _ in range(num_runs):
+            torch.npu.reset_peak_memory_stats()  # 重置峰值显存统计
             start_time = time.time()
             _ = torch_npu.npu_fusion_attention(
                 q, k, v, H, "BNSD",
@@ -107,25 +115,30 @@ def benchmark_flash_attention(B, T, C, H, q, k, v, num_runs=10):
             )
             torch.npu.synchronize()
             end_time = time.time()
-            total_time += (end_time - start_time)
+            peak_memory = torch.npu.max_memory_allocated()  # 记录峰值显存
+            total_time += (end_time - start_time)  # 累加运行时间
+            total_peak_memory += peak_memory  # 累加峰值显存
+            avg_peak_memory = total_peak_memory / num_runs
 
     # 计算平均运行时间
     avg_time = total_time / num_runs
 
     print(
-        f"FlashAttentionScore Average running time over {num_runs} runs: {avg_time:.6f} seconds, token length: {T}")
+        f"FlashAttentionScore Average running time over {num_runs} runs: {avg_time:.6f} seconds, {avg_peak_memory / 1024 ** 2:.2f} MB")
 
 
 # 示例用法
 if __name__ == "__main__":
-    test_list = [(8, 4096, 64, 64), (8, 4096*2, 64, 64), (8, 4096*3, 64, 64),
-                 (8, 4096*4, 64, 64), (8, 4096, 128, 64), (8, 4096, 32, 64), (8, 4096, 8, 64), ]
+    test_list = [(8, 4096, 64, 64), (8, 1024*6, 64, 64), (8, 4096*2, 64, 64), (8, 4096*3, 64, 64),]
+                #  (8, 4096*4, 64, 64), (8, 4096, 128, 64), (8, 4096, 32, 64), (8, 4096, 8, 64), ]
     for B, L, H, D in test_list:
         C = H * D
-        print(
-            f"Running benchmark with B={B}, T={L}, H={H}, D={D}... BF16 vs FP32")
-        device = torch.device("npu:0")
         dtype = torch.bfloat16  # FlashAttentionScore 支持 float16 和 bfloat16
+        dtype2 = torch.float16
+        print(
+            f"Running benchmark with B={B}, T={L}, H={H}, D={D}... {dtype} vs {dtype2}")
+        device = torch.device("npu:0")
+        
 
         # 生成随机输入张量
         q = torch.randn(B, H, L, D).to(device).to(dtype)  # [B, H, L, C//H]
@@ -137,14 +150,14 @@ if __name__ == "__main__":
         del q, k, v
 
         device = torch.device("npu:0")
-        dtype = torch.float32
+        
 
         # 生成随机输入张量
-        q = torch.randn(B, H, L, D).to(device).to(dtype)
-        k = torch.randn(B, H, L, D).to(device).to(dtype)
-        v = torch.randn(B, H, L, D).to(device).to(dtype)
-        w = torch.randn(B, H, L, D).uniform_(-8, -6).to(device).to(dtype)
-        u = torch.randn(H, D).to(device).to(dtype)
+        q = torch.randn(B, H, L, D).to(device).to(dtype2)
+        k = torch.randn(B, H, L, D).to(device).to(dtype2)
+        v = torch.randn(B, H, L, D).to(device).to(dtype2)
+        w = torch.randn(B, H, L, D).uniform_(-8, -6).to(device).to(dtype2)
+        u = torch.randn(H, D).to(device).to(dtype2)
 
         # 运行 benchmark
         benchmark(B, L, C, H, q, k, v, w, u, num_runs=10)  # 默认运行 10 次

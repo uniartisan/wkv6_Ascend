@@ -39,7 +39,7 @@ def rwkv_time_mix(B, T, C, H, data_type, input_dir, output_dir):
                 state = np.zeros((N), dtype=data_type)
                 for t in range(T):
                     for j in range(N):
-                        x = k[b, h, t, j] * v[b, h, t, i]
+                        x = k[b, h, t, j] * (N ** -0.5) * v[b, h, t, i] * (N ** -0.5)
                         s = state[j]
                         o[b, h, t, i] += q[b, h, t, j] * (u[h, j] * x + s)
                         state[j] = s * np.exp(-np.exp(w[b, h, t, j])) + x
@@ -59,16 +59,15 @@ def naive_recurrent_rwkv6(
 ):
     orig_dtype = q.dtype
     B, H, T, K, V = *q.shape, v.shape[-1]
-    q, k, v, w, u = map(lambda x: x.float(), (q, k, v, w, u))
-    h = torch.zeros(B, H, K, V, dtype=torch.float32, device=q.device)
+    h = torch.zeros(B, H, K, V, dtype=q.dtype, device=q.device)
     o = torch.zeros_like(v)
 
 
 
     for i in range(T):
         q_i = q[:, :, i, :] 
-        k_i = k[:, :, i]
-        v_i = v[:, :, i, :]
+        k_i = k[:, :, i] * (K ** -0.5)
+        v_i = v[:, :, i, :] * (V ** -0.5)
         w_i = w[:, :, i]
         kv_i = k_i[..., None] * v_i[..., None, :]
         o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
@@ -127,5 +126,5 @@ if __name__ == "__main__":
     os.system(f"rm -rf {output_dir}")
     os.system(f"mkdir {input_dir}")
     os.system(f"mkdir {output_dir}")
-    data_type = torch.float32
+    data_type = torch.float16
     rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir)
