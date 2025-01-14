@@ -30,8 +30,8 @@ public:
         this->B = B;
         this->T = T;
         this->C = C;
-        this->H = H;
-        this->N = C / H; // 头的维度
+        this->HEAD_NUMS = H;
+        this->HEAD_SIZE = C / H; // 头的维度
         this->scale = scale;
         // 在T维度上切tiling
         this->tileLength = tileLength;
@@ -44,7 +44,7 @@ public:
             this->hasRemainer = false;
         }
         // B * H 能被核数整除的情况，不能整除时将remainer按照每个core一个head进行处理
-        uint32_t totalHeads = this->B * this->H;
+        uint32_t totalHeads = this->B * this->HEAD_NUMS;
         uint32_t blockNum = GetBlockNum();
         uint32_t currentBlock = GetBlockIdx();
         uint32_t baseHeadsPerCore = totalHeads / blockNum; // 基础分配
@@ -65,30 +65,30 @@ public:
         {
             headOffset += remainerHeads;
         }
-        uint32_t uh_offset = headOffset % H;
-        this->sizePerCore = this->headPerCore * T * N;
-        kGm.SetGlobalBuffer((__gm__ half *)k + headOffset * T * N, this->sizePerCore);
-        vGm.SetGlobalBuffer((__gm__ half *)v + headOffset * T * N, this->sizePerCore);
-        wGm.SetGlobalBuffer((__gm__ half *)w + headOffset * T * N, this->sizePerCore);
-        rGm.SetGlobalBuffer((__gm__ half *)r + headOffset * T * N, this->sizePerCore);
-        oGm.SetGlobalBuffer((__gm__ half *)o + headOffset * T * N, this->sizePerCore);
-        uGm.SetGlobalBuffer((__gm__ half *)u + uh_offset * this->N, this->headPerCore * this->N);
+        uint32_t uh_offset = headOffset % this->HEAD_NUMS;
+        this->sizePerCore = this->headPerCore * T * this->HEAD_SIZE;
+        kGm.SetGlobalBuffer((__gm__ half *)k + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
+        vGm.SetGlobalBuffer((__gm__ half *)v + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
+        wGm.SetGlobalBuffer((__gm__ half *)w + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
+        rGm.SetGlobalBuffer((__gm__ half *)r + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
+        oGm.SetGlobalBuffer((__gm__ half *)o + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
+        uGm.SetGlobalBuffer((__gm__ half *)u + uh_offset * this->HEAD_SIZE, this->headPerCore * this->HEAD_SIZE);
         // k,v,w,r,u,o每次搬运[tileLength, N]大小的tensor
-        pipe.InitBuffer(inQueueK, BUFFER_NUM, this->tileLength * this->N * sizeof(half));
-        pipe.InitBuffer(inQueueV, BUFFER_NUM, this->tileLength * this->N * sizeof(half));
-        pipe.InitBuffer(inQueueW, BUFFER_NUM, this->tileLength * this->N * sizeof(half));
-        pipe.InitBuffer(inQueueR, BUFFER_NUM, this->tileLength * this->N * sizeof(half));
-        pipe.InitBuffer(inQueueU, BUFFER_NUM, this->N * sizeof(half));
+        pipe.InitBuffer(inQueueK, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(inQueueV, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(inQueueW, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(inQueueR, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(inQueueU, BUFFER_NUM, this->HEAD_SIZE * sizeof(half));
         // 其中 o 既是输入也是输出，所以既需要vecin的buffer也需要vecout的buffer
-        pipe.InitBuffer(inQueueO, BUFFER_NUM, this->tileLength * this->N * sizeof(half));
-        pipe.InitBuffer(outQueueO, BUFFER_NUM, this->tileLength * this->N * sizeof(half));
+        pipe.InitBuffer(inQueueO, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(outQueueO, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
         // state及中间变量，每个中间变量大小为[N, N]
-        pipe.InitBuffer(stateBuf, 3 * this->N * this->N * sizeof(half));
+        pipe.InitBuffer(stateBuf, 3 * this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
         // FIXME: state 应该是可以传入的参数
         // 用于储存broadcast结果
-        pipe.InitBuffer(broadBuf0, this->N * this->N * sizeof(half));
-        pipe.InitBuffer(broadBuf1, this->N * this->N * sizeof(half));
-        pipe.InitBuffer(broadBuf2, this->N * this->N * sizeof(half));
+        pipe.InitBuffer(broadBuf0, this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(broadBuf1, this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(broadBuf2, this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
         // 设置broadcast shape参数
         SetBroadShapes();
     }
@@ -142,23 +142,23 @@ private:
     __aicore__ inline void SetBroadShapes()
     {
         // 除了v以外所有的broadcast shape: [1, N] -> [N, N]
-        broadDstShape[0] = this->N;
-        broadDstShape[1] = this->N;
+        broadDstShape[0] = this->HEAD_SIZE;
+        broadDstShape[1] = this->HEAD_SIZE;
         broadSrcShape[0] = 1;
-        broadSrcShape[1] = this->N;
+        broadSrcShape[1] = this->HEAD_SIZE;
         // v的broadcast shape: [N, 1] -> [N, N]
-        vDstShape[0] = this->N;
-        vDstShape[1] = this->N;
-        vSrcShape[0] = this->N;
+        vDstShape[0] = this->HEAD_SIZE;
+        vDstShape[1] = this->HEAD_SIZE;
+        vSrcShape[0] = this->HEAD_SIZE;
         vSrcShape[1] = 1;
     }
 
     __aicore__ inline void CopyInU(uint32_t progress_h)
     {
         // copy in u[h,:]
-        uint32_t offset = progress_h * this->N;
+        uint32_t offset = progress_h * this->HEAD_SIZE;
         LocalTensor<half> uLocal = inQueueU.AllocTensor<half>();
-        DataCopy(uLocal, uGm[offset], this->N);
+        DataCopy(uLocal, uGm[offset], this->HEAD_SIZE);
         inQueueU.EnQue<half>(uLocal);
     }
 
@@ -171,17 +171,17 @@ private:
             currentTileLength = this->tileNumremainer;
         }
         
-        uint32_t offset = progress_h * this->T * this->N + progress_tile * this->tileLength * this->N;
+        uint32_t offset = progress_h * this->T * this->HEAD_SIZE + progress_tile * this->tileLength * this->HEAD_SIZE;
         LocalTensor<half> kLocal = inQueueK.AllocTensor<half>();
         LocalTensor<half> vLocal = inQueueV.AllocTensor<half>();
         LocalTensor<half> wLocal = inQueueW.AllocTensor<half>();
         LocalTensor<half> rLocal = inQueueR.AllocTensor<half>();
         LocalTensor<half> oLocal = inQueueO.AllocTensor<half>();
-        DataCopy(kLocal, kGm[offset], currentTileLength * this->N);
-        DataCopy(vLocal, vGm[offset], currentTileLength * this->N);
-        DataCopy(wLocal, wGm[offset], currentTileLength * this->N);
-        DataCopy(rLocal, rGm[offset], currentTileLength * this->N);
-        DataCopy(oLocal, oGm[offset], currentTileLength * this->N);
+        DataCopy(kLocal, kGm[offset], currentTileLength * this->HEAD_SIZE);
+        DataCopy(vLocal, vGm[offset], currentTileLength * this->HEAD_SIZE);
+        DataCopy(wLocal, wGm[offset], currentTileLength * this->HEAD_SIZE);
+        DataCopy(rLocal, rGm[offset], currentTileLength * this->HEAD_SIZE);
+        DataCopy(oLocal, oGm[offset], currentTileLength * this->HEAD_SIZE);
         inQueueK.EnQue<half>(kLocal);
         inQueueV.EnQue<half>(vLocal);
         inQueueW.EnQue<half>(wLocal);
@@ -197,9 +197,9 @@ private:
         {
             currentTileLength = this->tileNumremainer;
         }
-        uint32_t offset = progress_h * this->T * this->N + progress_tile * this->tileLength * this->N;
+        uint32_t offset = progress_h * this->T * this->HEAD_SIZE + progress_tile * this->tileLength * this->HEAD_SIZE;
         LocalTensor<half> oOutLocal = outQueueO.DeQue<half>();
-        DataCopy(oGm[offset], oOutLocal, currentTileLength * this->N);
+        DataCopy(oGm[offset], oOutLocal, currentTileLength * this->HEAD_SIZE);
         outQueueO.FreeTensor(oOutLocal);
     }
 
@@ -209,73 +209,73 @@ private:
                                    uint32_t progress_h, uint32_t progress_tile)
     {
         uint32_t offset0 = 0; // reserved for state vectors
-        uint32_t offset1 = this->N * this->N;
-        uint32_t offset2 = this->N * this->N * 2;
+        uint32_t offset1 = this->HEAD_SIZE * this->HEAD_SIZE;
+        uint32_t offset2 = this->HEAD_SIZE * this->HEAD_SIZE * 2;
 
         if (progress_tile == 0)
         {
-            Muls(stateLocal[offset0], stateLocal[offset0], (half)0, this->N * this->N);
+            Muls(stateLocal[offset0], stateLocal[offset0], (half)0, this->HEAD_SIZE * this->HEAD_SIZE);
         }
 
         for (uint32_t t = 0; t < this->tileLength; t++)
         {
             // compute kv = k.mT@v, offset1
             // broadcast v from [N,1] to [N, N]
-            Muls(vLocal[t * this->N], vLocal[t * this->N], this->scale, this->N);
+            Muls(vLocal[t * this->HEAD_SIZE], vLocal[t * this->HEAD_SIZE], this->scale, this->HEAD_SIZE);
             PipeBarrier<PIPE_V>();
-            BroadCast<half, 2, 1>(broadLocal2, vLocal[t * this->N], vDstShape, vSrcShape);
+            BroadCast<half, 2, 1>(broadLocal2, vLocal[t * this->HEAD_SIZE], vDstShape, vSrcShape);
             // broadcast k from [1,N] to [N, N]
-            Muls(kLocal[t * this->N], kLocal[t * this->N], this->scale, this->N);
+            Muls(kLocal[t * this->HEAD_SIZE], kLocal[t * this->HEAD_SIZE], this->scale, this->HEAD_SIZE);
             PipeBarrier<PIPE_V>();
-            BroadCast<half, 2, 0>(broadLocal1, kLocal[t * this->N], broadDstShape, broadSrcShape);
+            BroadCast<half, 2, 0>(broadLocal1, kLocal[t * this->HEAD_SIZE], broadDstShape, broadSrcShape);
             PipeBarrier<PIPE_V>();
-            Mul(stateLocal[offset1], broadLocal1, broadLocal2, this->N * this->N);
+            Mul(stateLocal[offset1], broadLocal1, broadLocal2, this->HEAD_SIZE * this->HEAD_SIZE);
 
             PipeBarrier<PIPE_V>();
 
             // compute ukv = u * kv, shape: N * N, offset2, u was stored in broadLocal0
-            Mul(stateLocal[offset2], broadLocal0, stateLocal[offset1], this->N * this->N);
+            Mul(stateLocal[offset2], broadLocal0, stateLocal[offset1], this->HEAD_SIZE * this->HEAD_SIZE);
 
             PipeBarrier<PIPE_V>();
 
             // compute sukv = state + ukv, shape:N * N, offset2
-            Add(stateLocal[offset2], stateLocal[offset2], stateLocal[offset0], this->N * this->N);
+            Add(stateLocal[offset2], stateLocal[offset2], stateLocal[offset0], this->HEAD_SIZE * this->HEAD_SIZE);
 
             PipeBarrier<PIPE_V>();
 
             // compute state = exp(-exp(w)) * state, shape:N * N, state
             // broadcast w from [1, N] to [N, N]
-            Exp(wLocal[t * this->N], wLocal[t * this->N], this->N);
+            Exp(wLocal[t * this->HEAD_SIZE], wLocal[t * this->HEAD_SIZE], this->HEAD_SIZE);
             PipeBarrier<PIPE_V>();
-            Muls(wLocal[t * this->N], wLocal[t * this->N], (half)-1.0, this->N);
+            Muls(wLocal[t * this->HEAD_SIZE], wLocal[t * this->HEAD_SIZE], (half)-1.0, this->HEAD_SIZE);
             PipeBarrier<PIPE_V>();
-            Exp(wLocal[t * this->N], wLocal[t * this->N], this->N);
+            Exp(wLocal[t * this->HEAD_SIZE], wLocal[t * this->HEAD_SIZE], this->HEAD_SIZE);
             PipeBarrier<PIPE_V>();
-            BroadCast<half, 2, 0>(broadLocal1, wLocal[t * this->N], broadDstShape, broadSrcShape);
+            BroadCast<half, 2, 0>(broadLocal1, wLocal[t * this->HEAD_SIZE], broadDstShape, broadSrcShape);
             PipeBarrier<PIPE_V>();
-            Mul(stateLocal[offset0], broadLocal1, stateLocal[offset0], this->N * this->N);
+            Mul(stateLocal[offset0], broadLocal1, stateLocal[offset0], this->HEAD_SIZE * this->HEAD_SIZE);
 
             PipeBarrier<PIPE_V>();
 
             // compute state = state + kv, shape:N*N, state
-            Add(stateLocal[offset0], stateLocal[offset0], stateLocal[offset1], this->N * this->N);
+            Add(stateLocal[offset0], stateLocal[offset0], stateLocal[offset1], this->HEAD_SIZE * this->HEAD_SIZE);
 
             // compute out = r * sukv, shape:N * N, offset2
             // broadcast r from [1, N] to [N, N]
-            BroadCast<half, 2, 0>(broadLocal1, rLocal[t * this->N], broadDstShape, broadSrcShape);
+            BroadCast<half, 2, 0>(broadLocal1, rLocal[t * this->HEAD_SIZE], broadDstShape, broadSrcShape);
             PipeBarrier<PIPE_V>();
-            Mul(stateLocal[offset2], broadLocal1, stateLocal[offset2], this->N * this->N);
+            Mul(stateLocal[offset2], broadLocal1, stateLocal[offset2], this->HEAD_SIZE * this->HEAD_SIZE);
 
             PipeBarrier<PIPE_V>();
 
             // compute reduceSum(out), shape: N
             // mask=N, repeatTimes=N, dstRepStride=1, srcBlkStride=1, srcRepStride=N*sizeof(half)/32=4
-            WholeReduceSum(oLocal[t * this->N], stateLocal[offset2], this->N, this->N, 1, 1, this->N * sizeof(half) / 32);
+            WholeReduceSum(oLocal[t * this->HEAD_SIZE], stateLocal[offset2], this->HEAD_SIZE, this->HEAD_SIZE, 1, 1, this->HEAD_SIZE * sizeof(half) / 32);
         }
 
         // move o from vecin to vecout then free vecin o
         LocalTensor<half> oOutLocal = outQueueO.AllocTensor<half>();
-        DataCopy(oOutLocal, oLocal, this->tileLength * this->N);
+        DataCopy(oOutLocal, oLocal, this->tileLength * this->HEAD_SIZE);
         outQueueO.EnQue<half>(oOutLocal);
         inQueueO.FreeTensor(oLocal);
 
@@ -292,7 +292,7 @@ private:
     TQue<QuePosition::VECOUT, BUFFER_NUM> outQueueO;
     GlobalTensor<half> kGm, vGm, wGm, rGm, uGm, oGm;
     TBuf<QuePosition::VECCALC> stateBuf, broadBuf0, broadBuf1, broadBuf2;
-    uint32_t B, T, C, H, N;
+    uint32_t B, T, C, HEAD_NUMS, HEAD_SIZE;
     uint32_t tileLength, tileNum, tileNumremainer;
     uint32_t batchPerCore, sizePerCore, headPerCore, uSizePerCore;
     __fp16 scale;
