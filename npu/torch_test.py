@@ -23,7 +23,8 @@ def naive_recurrent_rwkv6(
 ):
     orig_dtype = q.dtype
     B, H, T, K, V = *q.shape, v.shape[-1]
-    q, k, v, w, u, h = map(lambda x: x.to(dtype), (q, k, v, w, u, h))
+    orig_device = q.device
+    q, k, v, w, u, h = map(lambda x: x.cpu().to(dtype), (q, k, v, w, u, h))
     o = torch.zeros_like(v)
 
     for i in range(T):
@@ -36,7 +37,7 @@ def naive_recurrent_rwkv6(
         o[:, :, i] = o_i.sum(-2)
         h = h * (-w_i[..., None].exp()).exp() + kv_i
    
-    return o.to(orig_dtype), h.to(orig_dtype)
+    return o.to(orig_dtype).to(orig_device), h.to(orig_dtype).to(orig_device)
 
 
 
@@ -64,7 +65,7 @@ def compare_outputs(B, T, C, H, data_type):
     w = generate_random_tensor(param_shape, data_type, low=-1, high=1)
     q = generate_random_tensor(param_shape, data_type, low=-1, high=1)
     u = generate_random_tensor(u_shape, data_type, low=-1, high=1)
-    h = torch.randn(h_shape, dtype=data_type, device=torch.device("npu:0"))
+    h = generate_random_tensor(h_shape, data_type, low=-1, high=1)
     h2 = h.clone()
 
 
@@ -97,6 +98,27 @@ def compare_outputs(B, T, C, H, data_type):
         
         print((state.transpose(-1, -2).to(torch.float16) - state2).abs().max())
 
+def fused_recurrent_rwkv6_ascend(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+    scale: float = 1.0,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False,
+    training: bool = True,
+    causal: bool = True,
+):
+    B, H, T, K, V = q.shape[0], q.shape[1], q.shape[2], q.shape[3], v.shape[-1]
+    C = H*V
+    orig_dtype = q.dtype
+    q, k, v, w, u = (x.to(dtype=torch.float16) for x in (q, k, v, w, u))
+    if initial_state == None:
+        initial_state = torch.zeros(B, H, K, V, dtype=q.dtype, device=q.device)
+    output, h = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u, initial_state)
+    ht = h.to(orig_dtype) if output_final_state else None
+    return output.to(orig_dtype), ht
 
 # Example usage
 if __name__ == "__main__":
@@ -104,3 +126,7 @@ if __name__ == "__main__":
     dtype = torch.float16
     torch.manual_seed(42)
     compare_outputs(B, T, C, H, dtype)
+    q_shape = (1, 32, 56, 64)
+    h_shape = (1, 32, 64, 64)
+    q, k, v, w, u, h = map(lambda x: generate_random_tensor(x, dtype), (q_shape, q_shape, q_shape, q_shape, (32, 64), h_shape))
+    output, state = fused_recurrent_rwkv6_ascend(q, k, v, w, u, initial_state=h)
