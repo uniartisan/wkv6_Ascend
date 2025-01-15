@@ -19,7 +19,9 @@ class KernelRWKV6Vector
 public:
     __aicore__ inline KernelRWKV6Vector() {}
     __aicore__ inline void Init(uint32_t B, uint32_t T, uint32_t C, uint32_t H, __fp16 scale,
-                                GM_ADDR k, GM_ADDR v, GM_ADDR w, GM_ADDR r, GM_ADDR u, GM_ADDR o, uint32_t tileLength)
+                                GM_ADDR k, GM_ADDR v, GM_ADDR w, GM_ADDR r, 
+                                GM_ADDR u, GM_ADDR o, GM_ADDR h0, GM_ADDR ht, 
+                                uint32_t tileLength)
     {
         // k:[B, H, T, N]
         // v:[B, H, T, N]
@@ -27,6 +29,8 @@ public:
         // r:[B, H, T, N]
         // u:[H, N]
         // o:[B, H, T, N]
+        // h0:[B, H, N, N]
+        // ht:[B, H, N, N]
         this->B = B;
         this->T = T;
         this->C = C;
@@ -73,15 +77,20 @@ public:
         rGm.SetGlobalBuffer((__gm__ half *)r + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
         oGm.SetGlobalBuffer((__gm__ half *)o + headOffset * T * this->HEAD_SIZE, this->sizePerCore);
         uGm.SetGlobalBuffer((__gm__ half *)u + uh_offset * this->HEAD_SIZE, this->headPerCore * this->HEAD_SIZE);
+        const uint32_t headStateSize = this->HEAD_SIZE * this->HEAD_SIZE;
+        h0Gm.SetGlobalBuffer((__gm__ half *)h0 + headOffset * headStateSize, this->headPerCore * headStateSize);
+        htGm.SetGlobalBuffer((__gm__ half *)ht + headOffset * headStateSize, this->headPerCore * headStateSize);
         // k,v,w,r,u,o每次搬运[tileLength, N]大小的tensor
         pipe.InitBuffer(inQueueK, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
         pipe.InitBuffer(inQueueV, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
         pipe.InitBuffer(inQueueW, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
         pipe.InitBuffer(inQueueR, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
         pipe.InitBuffer(inQueueU, BUFFER_NUM, this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(inQueueH, 1, this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
         // 其中 o 既是输入也是输出，所以既需要vecin的buffer也需要vecout的buffer
         pipe.InitBuffer(inQueueO, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
         pipe.InitBuffer(outQueueO, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(half));
+        pipe.InitBuffer(outQueueH, 1, this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
         // state及中间变量，每个中间变量大小为[N, N]
         pipe.InitBuffer(stateBuf, 3 * this->HEAD_SIZE * this->HEAD_SIZE * sizeof(half));
         // FIXME: state 应该是可以传入的参数
@@ -108,6 +117,12 @@ public:
             // broadcast u and store in broadLocal0:[1, N] to [N, N]
             BroadCast<half, 2, 0>(broadLocal0, uLocal, broadDstShape, broadSrcShape);
 
+            // 加载当前头的初始 h0 到 stateLocal[0]
+            CopyInH0(h);
+            LocalTensor<half> hLocal = inQueueH.DeQue<half>();
+            DataCopy(stateLocal[0], hLocal, this->HEAD_SIZE * this->HEAD_SIZE);
+            inQueueH.FreeTensor(hLocal);
+            
             for (uint32_t tile = 0; tile < this->tileNum; tile++)
             {
                 // copy tensor k,v,w,r,o[b, h, tile * tileLength:(tile+1)*tileLength, :]
@@ -134,6 +149,9 @@ public:
                 CopyOutO(h, this->tileNum, true);
             }
 
+            // 保存当前头的 stateLocal[0] 到 ht
+            CopyOutHt(h);
+            
             inQueueU.FreeTensor(uLocal);
         }
     }
@@ -189,6 +207,15 @@ private:
         inQueueO.EnQue<half>(oLocal);
     }
 
+    __aicore__ inline void CopyInH0(uint32_t progress_h)
+    {
+        // copy in h0[b, h, :, :]
+        uint32_t offset = progress_h * this->HEAD_SIZE * this->HEAD_SIZE;
+        LocalTensor<half> hLocal = inQueueH.AllocTensor<half>();
+        DataCopy(hLocal, h0Gm[offset], this->HEAD_SIZE * this->HEAD_SIZE);
+        inQueueH.EnQue<half>(hLocal);
+    }
+
     __aicore__ inline void CopyOutO(uint32_t progress_h, uint32_t progress_tile, bool remainer)
     {
         // copy out o[b, h, tile*tileLength:(tile+1)*tileLength,:]
@@ -203,6 +230,15 @@ private:
         outQueueO.FreeTensor(oOutLocal);
     }
 
+    __aicore__ inline void CopyOutHt(uint32_t progress_h)
+    {
+        // copy out ht[b, h, :, :]
+        uint32_t offset = progress_h * this->HEAD_SIZE * this->HEAD_SIZE;
+        LocalTensor<half> hOutLocal = outQueueH.AllocTensor<half>();
+        DataCopy(hOutLocal, htGm[offset], this->HEAD_SIZE * this->HEAD_SIZE);
+        outQueueH.EnQue<half>(hOutLocal);
+    }
+
     __aicore__ inline void Compute(LocalTensor<half> kLocal, LocalTensor<half> vLocal, LocalTensor<half> wLocal,
                                    LocalTensor<half> rLocal, LocalTensor<half> oLocal, LocalTensor<half> stateLocal,
                                    LocalTensor<half> broadLocal0, LocalTensor<half> broadLocal1, LocalTensor<half> broadLocal2,
@@ -211,11 +247,6 @@ private:
         uint32_t offset0 = 0; // reserved for state vectors
         uint32_t offset1 = this->HEAD_SIZE * this->HEAD_SIZE;
         uint32_t offset2 = this->HEAD_SIZE * this->HEAD_SIZE * 2;
-
-        if (progress_tile == 0)
-        {
-            Muls(stateLocal[offset0], stateLocal[offset0], (half)0, this->HEAD_SIZE * this->HEAD_SIZE);
-        }
 
         for (uint32_t t = 0; t < this->tileLength; t++)
         {
@@ -288,9 +319,9 @@ private:
 
 private:
     TPipe pipe;
-    TQue<QuePosition::VECIN, BUFFER_NUM> inQueueK, inQueueV, inQueueW, inQueueR, inQueueU, inQueueO;
-    TQue<QuePosition::VECOUT, BUFFER_NUM> outQueueO;
-    GlobalTensor<half> kGm, vGm, wGm, rGm, uGm, oGm;
+    TQue<QuePosition::VECIN, BUFFER_NUM> inQueueK, inQueueV, inQueueW, inQueueR, inQueueU, inQueueO, inQueueH;
+    TQue<QuePosition::VECOUT, BUFFER_NUM> outQueueO, outQueueH;
+    GlobalTensor<half> kGm, vGm, wGm, rGm, uGm, oGm, h0Gm, htGm;
     TBuf<QuePosition::VECCALC> stateBuf, broadBuf0, broadBuf1, broadBuf2;
     uint32_t B, T, C, HEAD_NUMS, HEAD_SIZE;
     uint32_t tileLength, tileNum, tileNumremainer;
@@ -303,9 +334,11 @@ private:
 
 // implementation of kernel function
 extern "C" __global__ __aicore__ void rwkv6_vector(uint32_t B, uint32_t T, uint32_t C, uint32_t H, __fp16 scale,
-                                                   GM_ADDR k, GM_ADDR v, GM_ADDR w, GM_ADDR r, GM_ADDR u, GM_ADDR o, uint32_t tileLength)
+                                                   GM_ADDR k, GM_ADDR v, GM_ADDR w, GM_ADDR r, 
+                                                   GM_ADDR u, GM_ADDR o, GM_ADDR h0, GM_ADDR ht, 
+                                                   uint32_t tileLength)
 {
     KernelRWKV6Vector op;
-    op.Init(B, T, C, H, scale, k, v, w, r, u, o, tileLength);
+    op.Init(B, T, C, H, scale, k, v, w, r, u, o, h0, ht, tileLength);
     op.Process();
 }

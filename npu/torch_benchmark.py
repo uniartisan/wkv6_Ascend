@@ -25,7 +25,37 @@ experimental_config = torch_npu.profiler._ExperimentalConfig(
 )
 
 
-def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
+def naive_recurrent_rwkv6(
+    B, T, C, H,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+    h: torch.Tensor,
+    dtype = torch.float32
+):
+    orig_dtype = q.dtype
+    B, H, T, K, V = *q.shape, v.shape[-1]
+    q, k, v, w, u, h = map(lambda x: x.to(dtype), (q, k, v, w, u, h))
+    o = torch.zeros_like(v)
+
+    for i in range(T):
+        q_i = q[:, :, i, :] 
+        k_i = k[:, :, i] * (K ** -0.5)
+        v_i = v[:, :, i, :] * (V ** -0.5)
+        w_i = w[:, :, i]
+        kv_i = k_i[..., None] * v_i[..., None, :]
+        o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
+        o[:, :, i] = o_i.sum(-2)
+        h = h * (-w_i[..., None].exp()).exp() + kv_i
+   
+    return o.to(orig_dtype), h.to(orig_dtype)
+
+
+
+
+def benchmark(B, T, C, H, q, k, v, w, u, h, num_runs=10):
     """
     多次运行 rwkv6_vector.run_rwkv6_vector 并计算平均运行时间。
     
@@ -38,7 +68,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
     scale = 1.0 / math.sqrt(C // H)
     for _ in range(3):
         with torch.no_grad():
-            _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
+            _, _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u, h)
         torch.npu.synchronize()
 
     # 记录运行时间
@@ -48,7 +78,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
         for _ in range(num_runs):
             torch.npu.reset_peak_memory_stats()  # 重置峰值显存统计
             start_time = time.time()  # 记录开始时间
-            _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u)
+            _, _= rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u, h)
             torch.npu.synchronize()
             end_time = time.time()  # 记录结束时间
             peak_memory = torch.npu.max_memory_allocated()  # 记录峰值显存
@@ -79,7 +109,36 @@ def benchmark(B, T, C, H, q, k, v, w, u, num_runs=10):
     #         prof.step()
     print(
         f"WKV6 Vector Kernel Average running time over {num_runs} runs: {avg_time:.6f} seconds, {avg_peak_memory / 1024 ** 2:.2f} MB")
+    
 
+def benchmark_native(B, T, C, H, q, k, v, w, u, h, num_runs=10):
+    scale = 1.0 / math.sqrt(C // H)
+    for _ in range(3):
+        with torch.no_grad():
+            _, _ = naive_recurrent_rwkv6(B, T, C, H, q, k, v, w, u, h, dtype=torch.float16)
+        torch.npu.synchronize()
+
+    # 记录运行时间
+    total_time = 0.0
+    total_peak_memory = 0.0
+    with torch.no_grad():
+        for _ in range(num_runs):
+            torch.npu.reset_peak_memory_stats()  # 重置峰值显存统计
+            start_time = time.time()  # 记录开始时间
+            _, _ = naive_recurrent_rwkv6(B, T, C, H, q, k, v, w, u, h, dtype=torch.float16)
+            torch.npu.synchronize()
+            end_time = time.time()  # 记录结束时间
+            peak_memory = torch.npu.max_memory_allocated()  # 记录峰值显存
+            total_time += (end_time - start_time)  # 累加运行时间
+            total_peak_memory += peak_memory  # 累加峰值显存
+
+    # 计算平均运行时间
+    avg_time = total_time / num_runs
+    avg_peak_memory = total_peak_memory / num_runs
+
+
+    print(
+        f"WKV6 Vector Torch Average running time over {num_runs} runs: {avg_time:.6f} seconds, {avg_peak_memory / 1024 ** 2:.2f} MB")
 
 def benchmark_flash_attention(B, T, C, H, q, k, v, num_runs=10):
     """
@@ -130,6 +189,7 @@ def benchmark_flash_attention(B, T, C, H, q, k, v, num_runs=10):
 # 示例用法
 if __name__ == "__main__":
     test_list = [(8, 4096, 64, 64), (8, 1024*6, 64, 64), (8, 4096*2, 64, 64), (8, 4096*3, 64, 64),]
+    test_list = [(8, 4096, 64, 64), ]
                 #  (8, 4096*4, 64, 64), (8, 4096, 128, 64), (8, 4096, 32, 64), (8, 4096, 8, 64), ]
     for B, L, H, D in test_list:
         C = H * D
@@ -158,7 +218,9 @@ if __name__ == "__main__":
         v = torch.randn(B, H, L, D).to(device).to(dtype2)
         w = torch.randn(B, H, L, D).uniform_(-8, -6).to(device).to(dtype2)
         u = torch.randn(H, D).to(device).to(dtype2)
+        h = torch.randn((B, H, D, D), dtype=dtype2, device=device)
 
         # 运行 benchmark
-        benchmark(B, L, C, H, q, k, v, w, u, num_runs=10)  # 默认运行 10 次
+        benchmark(B, L, C, H, q, k, v, w, u, h, num_runs=10)  # 默认运行 10 次
+        benchmark_native(B, L, C, H, q, k, v, w, u, h, num_runs=10)
         del q, k, v, w, u

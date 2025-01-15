@@ -56,10 +56,11 @@ def naive_recurrent_rwkv6(
     v: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
+    h: torch.Tensor,
 ):
     orig_dtype = q.dtype
     B, H, T, K, V = *q.shape, v.shape[-1]
-    h = torch.zeros(B, H, K, V, dtype=q.dtype, device=q.device)
+    
     o = torch.zeros_like(v)
 
 
@@ -74,7 +75,7 @@ def naive_recurrent_rwkv6(
         o[:, :, i] = o_i.sum(-2)
         h = h * (-w_i[..., None].exp()).exp() + kv_i
    
-    return o.to(orig_dtype)
+    return o.to(orig_dtype), h.to(orig_dtype)
 
 def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
     N = C // H  # 头的维度
@@ -87,6 +88,7 @@ def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
     w = torch.rand(param_shape, dtype=data_type).uniform_(-8, -6)
     q = torch.rand(param_shape, dtype=data_type).uniform_(-1, 1)
     u = torch.rand(u_shape, dtype=data_type).uniform_(-1, 1)
+    h = torch.zeros(B, H, N, N, dtype=q.dtype, device=q.device)
     o = torch.zeros(param_shape, dtype=data_type)
 
     # 保存输入数据
@@ -96,6 +98,7 @@ def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
     q.cpu().numpy().tofile(os.path.join(input_dir, "input_r.bin"))
     u.cpu().numpy().tofile(os.path.join(input_dir, "input_u.bin"))
     o.cpu().numpy().tofile(os.path.join(input_dir, "input_o.bin"))
+    h.cpu().numpy().tofile(os.path.join(input_dir, "input_h.bin"))
 
     np.save(os.path.join(input_dir, "input_k.bin.npy"), k.cpu().numpy())
     np.save(os.path.join(input_dir, "input_v.bin.npy"), v.cpu().numpy())
@@ -103,15 +106,19 @@ def rwkv_time_mix_torch(B, T, C, H, data_type, input_dir, output_dir):
     np.save(os.path.join(input_dir, "input_r.bin.npy"), q.cpu().numpy())
     np.save(os.path.join(input_dir, "input_u.bin.npy"), u.cpu().numpy())
     np.save(os.path.join(input_dir, "input_o.bin.npy"), o.cpu().numpy())
+    np.save(os.path.join(input_dir, "input_h.bin.npy"), h.cpu().numpy())
 
     # 使用 PyTorch 计算输出
     with torch.no_grad():
-        o = naive_recurrent_rwkv6(B, T, C, H, q.npu(), k.npu(), v.npu(), w.npu(), u.npu())
+        o, state_t = naive_recurrent_rwkv6(B, T, C, H, q.npu(), k.npu(), v.npu(), w.npu(), u.npu(), h.npu())
         o = o.cpu()
+        state_t = state_t.cpu()
 
     # 保存输出数据
     o.numpy().tofile(os.path.join(output_dir, "output_o_golden.bin"))
+    state_t.numpy().tofile(os.path.join(output_dir, "output_state_t_golden.bin"))
     np.save(os.path.join(output_dir, "output_o_golden.bin.npy"), o.numpy())
+    np.save(os.path.join(output_dir, "output_state_t_golden.bin.npy"), state_t.numpy())
 
 if __name__ == "__main__":
     B, T, C, H = 1, 64, 4096, 64
