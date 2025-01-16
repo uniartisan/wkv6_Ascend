@@ -18,7 +18,7 @@ class KernelRWKV6Vector
 {
 public:
     __aicore__ inline KernelRWKV6Vector() {}
-    __aicore__ inline void Init(uint32_t B, uint32_t T, uint32_t C, uint32_t H, __fp16 scale,
+    __aicore__ inline void Init(uint32_t B, uint32_t T, uint32_t HEAD_NUMS, uint32_t HEAD_SIZE, __fp16 scale,
                                 GM_ADDR k, GM_ADDR v, GM_ADDR w, GM_ADDR r, 
                                 GM_ADDR u, GM_ADDR o, GM_ADDR h0, GM_ADDR ht, 
                                 uint32_t tileLength)
@@ -33,10 +33,10 @@ public:
         // ht:[B, H, N, N]
         this->B = B;
         this->T = T;
-        this->C = C;
-        this->HEAD_NUMS = H;
-        this->HEAD_ELEMENTS = H * H;
-        this->HEAD_SIZE = C / H; // 头的维度
+        this->C = HEAD_NUMS * HEAD_SIZE;
+        this->HEAD_NUMS = HEAD_NUMS;
+        this->HEAD_SIZE = HEAD_SIZE; // 头的维度
+        this->HEAD_ELEMENTS = this->HEAD_SIZE * this->HEAD_SIZE;
         this->scale = scale;
         // 在T维度上切tiling
         this->tileLength = tileLength;
@@ -150,7 +150,6 @@ public:
                 CopyOutO(h, this->tileNum, this->hasRemainer);
             }
 
-            // // bug
             CopyOutHt(h, h_offset, stateLocal);
             
             inQueueU.FreeTensor(uLocal);
@@ -333,12 +332,13 @@ private:
 };
 
 // implementation of kernel function
-extern "C" __global__ __aicore__ void rwkv6_vector(uint32_t B, uint32_t T, uint32_t C, uint32_t H, __fp16 scale,
+extern "C" __global__ __aicore__ void rwkv6_vector(uint32_t B, uint32_t T, uint32_t HEAD_NUMS, uint32_t HEAD_SIZE,
+                                                    __fp16 scale,
                                                    GM_ADDR k, GM_ADDR v, GM_ADDR w, GM_ADDR r, 
                                                    GM_ADDR u, GM_ADDR o, GM_ADDR h0, GM_ADDR ht, 
                                                    uint32_t tileLength)
 {
     KernelRWKV6Vector op;
-    op.Init(B, T, C, H, scale, k, v, w, r, u, o, h0, ht, tileLength);
+    op.Init(B, T, HEAD_NUMS, HEAD_SIZE, scale, k, v, w, r, u, o, h0, ht, tileLength);
     op.Process();
 }
