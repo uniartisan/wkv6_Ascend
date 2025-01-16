@@ -41,28 +41,8 @@ def naive_recurrent_rwkv6(
 
     ht = h.to(dtype)
 
-    del h
-    h = h0.clone()
-    q, k, v, w, u, h = map(lambda x: x.to(dtype), (q, k, v, w, u, h))
-    o1 = torch.zeros_like(v)
-    for i in range(T):
-        q_i = q[:, :, i, :] 
-        k_i = k[:, :, i] * (K ** -0.5)
-        v_i = v[:, :, i, :] * (V ** -0.5)
-        w_i = w[:, :, i]
-        kv_i = k_i[..., None] * v_i[..., None, :]
-        o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
-        o1[:, :, i] = o_i.sum(-2)
-        h = h * (-w_i[..., None].exp()).exp() + kv_i
     
-    ht1 = h.to(orig_dtype).to(orig_device)
-    diff = (o - o1).abs()
-    diff2 = (ht - ht1).abs()
-    print(f"Torch fp16 vs fp32 Output Max difference: {diff.max()}")
-    print(f"Torch fp16 vs fp32 Output Mean difference: {diff.mean()}")
-    print(f"Torch fp16 vs fp32 State Max difference: {diff2.max()}")
-    print(f"Torch fp16 vs fp32 State Mean difference: {diff2.mean()}")
-    return o.to(dtype).to(orig_device), h.to(dtype).to(orig_device), o1.to(orig_device), ht1.to(orig_device)
+    return o.to(dtype).to(orig_device), h.to(dtype).to(orig_device)
 
 
 
@@ -96,7 +76,7 @@ def compare_outputs(B, T, HEADS, HEADS_DIM, data_type):
 
     # Call naive_recurrent_rwkv6
     with torch.no_grad():
-        o_base, state, o_base2, state_base2 = naive_recurrent_rwkv6(B, T, HEADS, HEADS_DIM, q, k, v, w, u, h.transpose(-1, -2))
+        o_base, state = naive_recurrent_rwkv6(B, T, HEADS, HEADS_DIM, q, k, v, w, u, h.transpose(-1, -2))
         # 检查 base 没有 nan
         if torch.isnan(o_base).any():
             print("o_base has NaN.")
@@ -113,8 +93,7 @@ def compare_outputs(B, T, HEADS, HEADS_DIM, data_type):
         o2 = o2.cpu().float()
         state = state.cpu().float()
         state2 = state2.cpu().float()
-        o_base2 = o_base2.cpu().float()
-        state_base2 = state_base2.cpu().float()
+
         
 
         # 比较 o_base 和 o2
@@ -130,8 +109,8 @@ def compare_outputs(B, T, HEADS, HEADS_DIM, data_type):
         print(f"Mean difference: {diff.mean()}")
         # print(f"Difference details: {diff}")
         
-        print(f"Max state difference: {(state_base2.transpose(-1, -2).float() - state2.float()).abs().max()}")
-        print(f"Mean state difference: {(state_base2.transpose(-1, -2).float() - state2.float()).abs().mean()}")
+        print(f"Max state difference: {(state.transpose(-1, -2).float() - state2.float()).abs().max()}")
+        print(f"Mean state difference: {(state.transpose(-1, -2).float() - state2.float()).abs().mean()}")
 
 def fused_recurrent_rwkv6_ascend(
     q: torch.Tensor,
@@ -148,7 +127,7 @@ def fused_recurrent_rwkv6_ascend(
     B, H, T, K, V = q.shape[0], q.shape[1], q.shape[2], q.shape[3], v.shape[-1]
     C = H*V
     orig_dtype = q.dtype
-    q, k, v, w, u = (x.to(dtype=torch.float16) for x in (q, k, v, w, u))
+    q, k, v, w, u = (x.to(dtype=torch.float32) for x in (q, k, v, w, u))
     if initial_state == None:
         initial_state = torch.zeros(B, H, K, V, dtype=q.dtype, device=q.device)
     output, h = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u, initial_state)
@@ -158,7 +137,7 @@ def fused_recurrent_rwkv6_ascend(
 # Example usage
 if __name__ == "__main__":
     B, T, HEAD, HEADDIM = 1, 4096, 64, 64
-    dtype = torch.float16
+    dtype = torch.float32
     torch.manual_seed(42)
     compare_outputs(B, T, HEAD, HEADDIM, dtype)
 

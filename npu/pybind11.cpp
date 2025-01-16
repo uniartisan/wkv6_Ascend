@@ -14,9 +14,9 @@ namespace my_wkv
         auto acl_stream = c10_npu::getCurrentNPUStream().stream(false);
         at::Tensor output = at::empty_like(r); // output tensor has the same shape as r(querry tensor)
         at::Tensor h_output = at::empty_like(h_input); // output state has the same shape as h_input
-        uint32_t tileLength = 64;
+        uint32_t tileLength = 32;
         uint32_t blockDim = 48;
-        __fp16 scale = 1.0 / sqrtf(HEAD_SIZE);
+        float scale = 1.0 / sqrtf(HEAD_SIZE);
 
         ACLRT_LAUNCH_KERNEL(rwkv6_vector)
         (blockDim, acl_stream, B, T, HEAD_NUMS, HEAD_SIZE, scale, const_cast<void *>(k.storage().data()), const_cast<void *>(v.storage().data()),
