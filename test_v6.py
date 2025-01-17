@@ -30,8 +30,11 @@ User: {instruction}
 
 Assistant:"""
 
-device = 'npu'
-model = Rwkv6ForCausalLM.from_pretrained("RWKV/rwkv-6-world-1b6", torch_dtype=torch.float32).to(device)
+device = 'npu:0'
+# model = Rwkv6ForCausalLM.from_pretrained("RWKV/rwkv-6-world-1b6", torch_dtype=torch.float32).to(device)
+
+
+model = Rwkv6ForCausalLM.from_pretrained("RWKV/rwkv-6-world-1b6", torch_dtype=torch.float32).to(device).to(torch.float32)
 tokenizer = Rwkv6Tokenizer.from_pretrained("RWKV/rwkv-6-world-1b6")
 
 
@@ -42,8 +45,8 @@ inputs = tokenizer(prompt, return_tensors="pt").to(device)
 print("ready to decode!")
 import time
 start_time = time.time()
-output = model.generate(inputs["input_ids"], max_new_tokens=50, do_sample=True, temperature=1.0, top_p=0.3, top_k=0, )
+output = model.generate(inputs["input_ids"], max_new_tokens=200, do_sample=True, temperature=1.0, top_p=0.3, top_k=0, )
 
-print(output.shape)
+
 print(tokenizer.decode(output[0].tolist(), skip_special_tokens=True))
 print(time.time() - start_time)

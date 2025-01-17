@@ -41,8 +41,8 @@ public:
         // 在T维度上切tiling
         this->tileLength = tileLength;
         this->tileNum = this->T / tileLength; // 余数还需要考虑。
-        this->tileNumremainer = this->T % tileLength; // 余数
-        if (this->tileNumremainer > 0)
+        this->tileNumRemainLength = this->T % tileLength; // 余数
+        if (this->tileNumRemainLength > 0)
         {
             this->hasRemainer = true;
         } else {
@@ -86,7 +86,9 @@ public:
         pipe.InitBuffer(inQueueW, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(float));
         pipe.InitBuffer(inQueueR, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(float));
         pipe.InitBuffer(inQueueU, BUFFER_NUM, this->HEAD_SIZE * sizeof(float));
+        // h0, ht每次搬运[HEAD_SIZE, HEAD_SIZE]大小的tensor
         pipe.InitBuffer(inQueueH, BUFFER_NUM, this->HEAD_ELEMENTS * sizeof(float));
+        pipe.InitBuffer(outQueueH, BUFFER_NUM, this->HEAD_ELEMENTS * sizeof(float));
         // 其中 o 既是输入也是输出，所以既需要vecin的buffer也需要vecout的buffer
         pipe.InitBuffer(inQueueO, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(float));
         pipe.InitBuffer(outQueueO, BUFFER_NUM, this->tileLength * this->HEAD_SIZE * sizeof(float));
@@ -125,32 +127,36 @@ public:
             for (uint32_t tile = 0; tile < this->tileNum; tile++)
             {
                 // copy tensor k,v,w,r,o[b, h, tile * tileLength:(tile+1)*tileLength, :]
-                CopyInKVWRO(h, tile, false);
+                CopyInKVWRO(h, tile, this->tileLength);
                 LocalTensor<float> kLocal = inQueueK.DeQue<float>();
                 LocalTensor<float> vLocal = inQueueV.DeQue<float>();
                 LocalTensor<float> wLocal = inQueueW.DeQue<float>();
                 LocalTensor<float> rLocal = inQueueR.DeQue<float>();
                 LocalTensor<float> oLocal = inQueueO.DeQue<float>();
                 Compute(kLocal, vLocal, wLocal, rLocal, oLocal, stateLocal, broadLocal0, broadLocal1, broadLocal2, h, 
-                        tile);
-                CopyOutO(h, tile, false);
+                        tile, this->tileLength);
+                CopyOutO(h, tile, this->tileLength);
             }
 
             // 处理余数
             if (this->hasRemainer)
             {
-                CopyInKVWRO(h, this->tileNum, this->hasRemainer);
+                CopyInKVWRO(h, this->tileNum, this->tileNumRemainLength);
                 LocalTensor<float> kLocal = inQueueK.DeQue<float>();
                 LocalTensor<float> vLocal = inQueueV.DeQue<float>();
                 LocalTensor<float> wLocal = inQueueW.DeQue<float>();
                 LocalTensor<float> rLocal = inQueueR.DeQue<float>();
                 LocalTensor<float> oLocal = inQueueO.DeQue<float>();
                 Compute(kLocal, vLocal, wLocal, rLocal, oLocal, stateLocal, broadLocal0, broadLocal1, broadLocal2, h, 
-                        this->tileNum);
-                CopyOutO(h, this->tileNum, this->hasRemainer);
+                        this->tileNum, this->tileNumRemainLength);
+                CopyOutO(h, this->tileNum, this->tileNumRemainLength);
             }
 
-            CopyOutHt(h, h_offset, stateLocal);
+            // copy out stateLocal[0] to ht[b, h, :, :]
+            LocalTensor<float> htOutLocal = outQueueH.AllocTensor<float>();
+            DataCopy(htOutLocal, stateLocal[0], this->HEAD_ELEMENTS);
+            outQueueH.EnQue<float>(htOutLocal);      
+            CopyOutHt(h, h_offset);
             
             inQueueU.FreeTensor(uLocal);
         }
@@ -180,14 +186,9 @@ private:
         inQueueU.EnQue<float>(uLocal);
     }
 
-    __aicore__ inline void CopyInKVWRO(uint32_t progress_h, uint32_t progress_tile, bool remainer)
+    __aicore__ inline void CopyInKVWRO(uint32_t progress_h, uint32_t progress_tile, uint32_t currentTileLength)
     {
         // copy k,v,w,r,o[b, h, tile*tileLength:(tile+1)*tileLength, :]
-        uint32_t currentTileLength = this->tileLength;
-        if (remainer)
-        {
-            currentTileLength = this->tileNumremainer;
-        }
         
         uint32_t offset = progress_h * this->T * this->HEAD_SIZE + progress_tile * this->tileLength * this->HEAD_SIZE;
         LocalTensor<float> kLocal = inQueueK.AllocTensor<float>();
@@ -215,45 +216,43 @@ private:
         inQueueH.EnQue<float>(hLocal);
     }
 
-    __aicore__ inline void CopyOutO(uint32_t progress_h, uint32_t progress_tile, bool remainer)
+    __aicore__ inline void CopyOutO(uint32_t progress_h, uint32_t progress_tile, uint32_t currentTileLength)
     {
         // copy out o[b, h, tile*tileLength:(tile+1)*tileLength,:]
-        uint32_t currentTileLength = this->tileLength;
-        if (remainer)
-        {
-            currentTileLength = this->tileNumremainer;
-        }
         uint32_t offset = progress_h * this->T * this->HEAD_SIZE + progress_tile * this->tileLength * this->HEAD_SIZE;
         LocalTensor<float> oOutLocal = outQueueO.DeQue<float>();
         DataCopy(oGm[offset], oOutLocal, currentTileLength * this->HEAD_SIZE);
         outQueueO.FreeTensor(oOutLocal);
     }
 
-    __aicore__ inline void CopyOutHt(uint32_t progress_h, uint32_t offset, LocalTensor<float> stateLocal)
+    __aicore__ inline void CopyOutHt(uint32_t progress_h, uint32_t offset)
     {
-        DataCopy(htGm[offset], stateLocal[0], this->HEAD_ELEMENTS);        
+        LocalTensor<float> htOutLocal = outQueueH.DeQue<float>();
+        DataCopy(htGm[offset], htOutLocal, this->HEAD_ELEMENTS); 
+        outQueueH.FreeTensor(htOutLocal);       
     }
 
     __aicore__ inline void Compute(LocalTensor<float> kLocal, LocalTensor<float> vLocal, LocalTensor<float> wLocal,
                                    LocalTensor<float> rLocal, LocalTensor<float> oLocal, LocalTensor<float> stateLocal,
                                    LocalTensor<float> broadLocal0, LocalTensor<float> broadLocal1, 
                                    LocalTensor<float> broadLocal2,
-                                   uint32_t progress_h, uint32_t progress_tile)
+                                   uint32_t progress_h, uint32_t progress_tile,
+                                   uint32_t currentTileLength)
     {
         uint32_t offset0 = 0; // reserved for state vectors
         uint32_t offset1 = this->HEAD_ELEMENTS;
         uint32_t offset2 = this->HEAD_ELEMENTS * 2;
 
-        for (uint32_t t = 0; t < this->tileLength; t++)
+        for (uint32_t t = 0; t < currentTileLength; t++)
         {
             // compute kv = k.mT@v, offset1
             // broadcast v from [N,1] to [N, N]
-            Muls(vLocal[t * this->HEAD_SIZE], vLocal[t * this->HEAD_SIZE], this->scale, this->HEAD_SIZE);
-            PipeBarrier<PIPE_V>();
+            // Muls(vLocal[t * this->HEAD_SIZE], vLocal[t * this->HEAD_SIZE], this->scale, this->HEAD_SIZE);
+            // PipeBarrier<PIPE_V>();
             BroadCast<float, 2, 1>(broadLocal2, vLocal[t * this->HEAD_SIZE], vDstShape, vSrcShape);
             // broadcast k from [1,N] to [N, N]
-            Muls(kLocal[t * this->HEAD_SIZE], kLocal[t * this->HEAD_SIZE], this->scale, this->HEAD_SIZE);
-            PipeBarrier<PIPE_V>();
+            // Muls(kLocal[t * this->HEAD_SIZE], kLocal[t * this->HEAD_SIZE], this->scale, this->HEAD_SIZE);
+            // PipeBarrier<PIPE_V>();
             BroadCast<float, 2, 0>(broadLocal1, kLocal[t * this->HEAD_SIZE], broadDstShape, broadSrcShape);
             PipeBarrier<PIPE_V>();
             Mul(stateLocal[offset1], broadLocal1, broadLocal2, this->HEAD_ELEMENTS);
@@ -319,11 +318,11 @@ private:
     TPipe pipe;
     TQue<QuePosition::VECIN, BUFFER_NUM> inQueueK, inQueueV, inQueueW, 
                 inQueueR, inQueueU, inQueueO, inQueueH;
-    TQue<QuePosition::VECOUT, BUFFER_NUM> outQueueO;
+    TQue<QuePosition::VECOUT, BUFFER_NUM> outQueueO, outQueueH;
     GlobalTensor<float> kGm, vGm, wGm, rGm, uGm, oGm, h0Gm, htGm;
     TBuf<QuePosition::VECCALC> stateBuf, broadBuf0, broadBuf1, broadBuf2;
     uint32_t B, T, C, HEAD_NUMS, HEAD_SIZE, HEAD_ELEMENTS;
-    uint32_t tileLength, tileNum, tileNumremainer;
+    uint32_t tileLength, tileNum, tileNumRemainLength;
     uint32_t batchPerCore, sizePerCore, headPerCore, uSizePerCore;
     float scale;
     bool hasRemainer;
