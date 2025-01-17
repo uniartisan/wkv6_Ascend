@@ -64,5 +64,5 @@ cmake --build build -j
     cd build
     # python ../scripts/gen_data.py
     python3 ../torch_test.py
-    python3 ../torch_benchmark.py
+    # python3 ../torch_benchmark.py
 )

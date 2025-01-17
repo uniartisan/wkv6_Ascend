@@ -42,8 +42,8 @@ inputs = tokenizer(prompt, return_tensors="pt").to(device)
 print("ready to decode!")
 import time
 start_time = time.time()
-output = model.generate(inputs["input_ids"], max_new_tokens=50, do_sample=True, temperature=1.0, top_p=0.3, top_k=0, )
+output = model.generate(inputs["input_ids"], max_new_tokens=200, do_sample=True, temperature=1.0, top_p=0.3, top_k=0, )
 
-print(output.shape)
+
 print(tokenizer.decode(output[0].tolist(), skip_special_tokens=True))
 print(time.time() - start_time)
