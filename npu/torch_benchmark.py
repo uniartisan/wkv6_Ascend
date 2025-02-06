@@ -55,7 +55,7 @@ def naive_recurrent_rwkv6(
 
 
 
-def benchmark(B, T, C, H, q, k, v, w, u, h, num_runs=10):
+def benchmark(B, T, H, D, q, k, v, w, u, h, num_runs=10):
     """
     多次运行 rwkv6_vector.run_rwkv6_vector 并计算平均运行时间。
     
@@ -65,10 +65,10 @@ def benchmark(B, T, C, H, q, k, v, w, u, h, num_runs=10):
         num_runs: 运行次数，默认为 10 次。
     """
     # 预热（避免第一次运行时间不准确）
-    scale = 1.0 / math.sqrt(C // H)
+    scale = 1.0 / math.sqrt(H // D)
     for _ in range(3):
         with torch.no_grad():
-            _, _ = rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u, h)
+            _, _ = rwkv6_vector.run_rwkv6_vector(B, T, H, D, q, k, v, w, u, h)
         torch.npu.synchronize()
 
     # 记录运行时间
@@ -78,7 +78,7 @@ def benchmark(B, T, C, H, q, k, v, w, u, h, num_runs=10):
         for _ in range(num_runs):
             torch.npu.reset_peak_memory_stats()  # 重置峰值显存统计
             start_time = time.time()  # 记录开始时间
-            _, _= rwkv6_vector.run_rwkv6_vector(B, T, C, H, q, k, v, w, u, h)
+            _, _= rwkv6_vector.run_rwkv6_vector(B, T, H, D, q, k, v, w, u, h)
             torch.npu.synchronize()
             end_time = time.time()  # 记录结束时间
             peak_memory = torch.npu.max_memory_allocated()  # 记录峰值显存
@@ -221,6 +221,6 @@ if __name__ == "__main__":
         h = torch.randn((B, H, D, D), dtype=dtype2, device=device)
 
         # 运行 benchmark
-        benchmark(B, L, C, H, q, k, v, w, u, h, num_runs=10)  # 默认运行 10 次
+        benchmark(B, L, H, D, q, k, v, w, u, h, num_runs=10)  # 默认运行 10 次
         benchmark_native(B, L, C, H, q, k, v, w, u, h, num_runs=10)
         del q, k, v, w, u
