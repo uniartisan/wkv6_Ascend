@@ -194,7 +194,7 @@ if __name__ == "__main__":
     for B, L, H, D in test_list:
         C = H * D
         dtype = torch.bfloat16  # FlashAttentionScore 支持 float16 和 bfloat16
-        dtype2 = torch.float16
+        dtype2 = torch.float32
         print(
             f"Running benchmark with B={B}, T={L}, H={H}, D={D}... {dtype} vs {dtype2}")
         device = torch.device("npu:0")
