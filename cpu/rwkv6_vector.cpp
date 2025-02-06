@@ -267,7 +267,7 @@ private:
             // compute sukv = state + ukv, shape:N * N, offset2
             Add(stateLocal[offset2], stateLocal[offset2], stateLocal[offset0], this->HEAD_ELEMENTS);
 
-            PipeBarrier<PIPE_V>();
+            // PipeBarrier<PIPE_V>();
 
             // compute state = exp(-exp(w)) * state, shape:N * N, state
             // broadcast w from [1, N] to [N, N]

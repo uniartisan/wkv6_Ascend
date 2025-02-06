@@ -30,7 +30,7 @@ User: {instruction}
 
 Assistant:"""
 
-device = 'npu'
+device = 'npu:0'
 model = Rwkv6ForCausalLM.from_pretrained("RWKV/rwkv-6-world-1b6", torch_dtype=torch.float16).to(device)
 tokenizer = Rwkv6Tokenizer.from_pretrained("RWKV/rwkv-6-world-1b6")
 
